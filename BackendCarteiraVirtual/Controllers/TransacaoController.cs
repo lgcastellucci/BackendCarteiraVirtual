@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
+using System.Drawing;
+using System.Net;
 
 namespace BackendCarteiraVirtual.Controllers
 {
@@ -52,27 +54,63 @@ namespace BackendCarteiraVirtual.Controllers
             }
 
             var acessoBD = new AcessoBancoDeDados();
-            int codUsuarioPagador = acessoBD.RetornaCodUsuario(transacao.PagadorDocumento, transacao.PagadorEmail);
-            int codUsuarioRecebedor = acessoBD.RetornaCodUsuario(transacao.RecebedorDocumento, transacao.RecebedorEmail);
+            var usuarioPagador = acessoBD.RetornaUsuario(transacao.PagadorDocumento, transacao.PagadorEmail);
+            var usuarioRecebedor = acessoBD.RetornaUsuario(transacao.RecebedorDocumento, transacao.RecebedorEmail);
 
-            if (codUsuarioPagador == 0)
+            if (usuarioPagador.CodUsuario == 0)
             {
                 retorno.Sucesso = false;
                 retorno.Mensagem = "Usuario pagador não encontrado";
                 return retorno;
             }
-            if (codUsuarioRecebedor == 0)
+            if (usuarioRecebedor.CodUsuario == 0)
             {
                 retorno.Sucesso = false;
                 retorno.Mensagem = "Usuario recebedor não encontrado";
                 return retorno;
             }
 
-            if (acessoBD.InserirTransacao(codUsuarioPagador, codUsuarioRecebedor, transacao.Valor) == 0)
+            if (usuarioPagador.Saldo <= 0)
+            {
+                retorno.Sucesso = false;
+                retorno.Mensagem = "Usuario pagador não tem saldo";
+                return retorno;
+            }
+            if (usuarioPagador.Saldo < transacao.Valor)
+            {
+                retorno.Sucesso = false;
+                retorno.Mensagem = "Usuario pagador não tem saldo suficiente";
+                return retorno;
+            }
+
+            if (usuarioPagador.Tipo != "C")
+            {
+                retorno.Sucesso = false;
+                retorno.Mensagem = "Usuario pagador não pode fazer essa transação";
+                return retorno;
+            }
+            if (usuarioRecebedor.Tipo != "L")
+            {
+                retorno.Sucesso = false;
+                retorno.Mensagem = "Usuario recebedor não pode fazer essa transação";
+                return retorno;
+            }
+
+            int codTransacao = acessoBD.InserirTransacao(usuarioPagador.CodUsuario, usuarioRecebedor.CodUsuario, transacao.Valor);
+            if (codTransacao == 0)
             {
                 retorno.Sucesso = false;
                 retorno.Mensagem = "Erro ao inserir usuário";
                 return retorno;
+            }
+
+            //chamar o externo
+            var httpService = new HttpService();
+            var httpResponseCode = httpService.EnviaTransacao(transacao.Valor).Result;
+
+            if (httpResponseCode != HttpStatusCode.OK)
+            {
+                int codTransacaoDesfazimento = acessoBD.DesfazerTransacao(codTransacao);
             }
 
             retorno.Sucesso = true;

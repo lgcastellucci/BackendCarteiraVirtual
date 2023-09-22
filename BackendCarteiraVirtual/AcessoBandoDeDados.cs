@@ -1,31 +1,49 @@
 using System.Data.SqlClient;
-using System.Transactions;
-
 namespace BackendCarteiraVirtual
 {
     public class AcessoBancoDeDados
     {
+        public class Usuario
+        {
+            public int CodUsuario { get; set; }
+            public string Nome { get; set; }
+            public string Documento { get; set; }
+            public string Email { get; set; }
+            public string Tipo { get; set; }
+            public double Saldo { get; set; }
+            public Usuario()
+            {
+                CodUsuario = 0;
+                Nome = "";
+                Documento = "";
+                Email = "";
+                Tipo = "";
+                Saldo = 0;
+            }
+        }
+
         public bool UsuarioExiste(string? Documento, string? Email)
         {
-            if (RetornaCodUsuario(Documento, Email) == 0)
+            if (RetornaUsuario(Documento, Email).CodUsuario == 0)
                 return false;
 
             return true;
         }
 
-        public int RetornaCodUsuario(string? Documento, string? Email)
+        public Usuario RetornaUsuario(string? Documento, string? Email)
         {
+            var usuario = new Usuario();
+
             if (Documento == null)
                 Documento = "";
             if (Email == null)
                 Email = "";
 
-            var codUsuario = 0;
             var connectionString = StringConexaoBD.ObterStringDeConexao();
             using (SqlConnection connection = new SqlConnection(connectionString))
             {
                 string sqlQuery = "";
-                sqlQuery += " SELECT COD_USUARIO ";
+                sqlQuery += " SELECT COD_USUARIO, NOME, DOCUMENTO, EMAIL, TIPO, SALDO ";
                 sqlQuery += " FROM USUARIOS ";
                 if (!string.IsNullOrWhiteSpace(Documento))
                     sqlQuery += " WHERE DOCUMENTO = '" + Documento + "' ";
@@ -41,16 +59,22 @@ namespace BackendCarteiraVirtual
                     {
                         while (reader.Read())
                         {
-                            codUsuario = Convert.ToInt32(reader["COD_USUARIO"]);
+                            usuario.CodUsuario = Convert.ToInt32(reader["COD_USUARIO"]);
+                            usuario.Nome = (string)reader["NOME"];
+                            usuario.Documento = (string)reader["DOCUMENTO"];
+                            usuario.Email = (string)reader["EMAIL"];
+                            usuario.Tipo = (string)reader["TIPO"];
+                            usuario.Saldo = (double)((decimal)reader["SALDO"]);
                         }
                     }
+                    reader.Close();
                 }
                 catch
                 {
                 }
             }
 
-            return codUsuario;
+            return usuario;
         }
 
         public bool InserirUsuario(string Nome, string? Documento, string? Email, string Tipo)
@@ -125,9 +149,9 @@ namespace BackendCarteiraVirtual
 
             #region Retirando o saldo do Pagador
             sqlQuery = "";
-            sqlQuery += " UPDATE USUARIOS SET SALDO = SALDO - " + Valor.ToString();
-            sqlQuery += " WHERE COD_USUARIO_PAGADOR = " + CodUsuarioPagador.ToString();
-            command = new SqlCommand(sqlQuery, connection);
+            sqlQuery += " UPDATE USUARIOS SET SALDO = SALDO - " + Valor.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+            sqlQuery += " WHERE COD_USUARIO = " + CodUsuarioPagador.ToString();
+            command = new SqlCommand(sqlQuery, connection, transaction);
             if (command.ExecuteNonQuery() == 0)
             {
                 transaction.Rollback();
@@ -137,11 +161,11 @@ namespace BackendCarteiraVirtual
             }
             #endregion
 
-            #region Retirando o saldo do Pagador
+            #region Retirando o saldo do Recebedor
             sqlQuery = "";
-            sqlQuery += " UPDATE USUARIOS SET SALDO = SALDO - " + Valor.ToString();
-            sqlQuery += " WHERE COD_USUARIO_RECEBDOR = " + CodUsuarioRecebedor.ToString();
-            command = new SqlCommand(sqlQuery, connection);
+            sqlQuery += " UPDATE USUARIOS SET SALDO = SALDO + " + Valor.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+            sqlQuery += " WHERE COD_USUARIO = " + CodUsuarioRecebedor.ToString();
+            command = new SqlCommand(sqlQuery, connection, transaction);
             if (command.ExecuteNonQuery() == 0)
             {
                 transaction.Rollback();
@@ -154,10 +178,16 @@ namespace BackendCarteiraVirtual
             #region Inserindo a transacao
             sqlQuery = "";
             sqlQuery += " INSERT INTO TRANSACOES ";
-            sqlQuery += " (COD_USUARIO_PAGADOR, COD_USUARIO_RECEBEDOR, VALOR, DATA) ";
+            sqlQuery += " (COD_USUARIO_PAGADOR, COD_USUARIO_RECEBEDOR, VALOR, TIPO, DATA) ";
             sqlQuery += " VALUES ";
-            sqlQuery += " ( " + CodUsuarioPagador.ToString() + ", " + CodUsuarioRecebedor.ToString() + ", " + Valor.ToString() + "', GETDATE() ) ";
-            command = new SqlCommand(sqlQuery, connection);
+            sqlQuery += " ( ";
+            sqlQuery += CodUsuarioPagador.ToString() + ", ";
+            sqlQuery += CodUsuarioRecebedor.ToString() + ", ";
+            sqlQuery += Valor.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + ", ";
+            sqlQuery += "'TRANSACAO', ";
+            sqlQuery += "'" + DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss") + "' ";
+            sqlQuery += " ) ";
+            command = new SqlCommand(sqlQuery, connection, transaction);
             if (command.ExecuteNonQuery() == 0)
             {
                 transaction.Rollback();
@@ -166,7 +196,7 @@ namespace BackendCarteiraVirtual
                 return 0;
             }
 
-            command = new SqlCommand("SELECT @@IDENTITY COD_TRANSACAO", connection);
+            command = new SqlCommand("SELECT @@IDENTITY COD_TRANSACAO", connection, transaction);
             var reader = command.ExecuteReader();
             if (!reader.HasRows)
             {
@@ -178,9 +208,8 @@ namespace BackendCarteiraVirtual
 
             while (reader.Read())
                 codTransacao = Convert.ToInt32(reader["COD_TRANSACAO"]);
+            reader.Close();
             #endregion
-
-            //chamar o externo
 
             transaction.Commit();
             connection.Close();
@@ -189,6 +218,139 @@ namespace BackendCarteiraVirtual
             return codTransacao;
         }
 
+        public int DesfazerTransacao(int CodTransacao)
+        {
+            if (CodTransacao <= 0)
+                return 0;
 
+            var codTransacaoDesfazimento = 0;
+            var connectionString = StringConexaoBD.ObterStringDeConexao();
+            var connection = new SqlConnection(connectionString);
+            string sqlQuery = " ";
+            SqlCommand command;
+            SqlDataReader reader; ;
+
+            try
+            {
+                connection.Open();
+            }
+            catch
+            {
+                connection.Close();
+                connection.Dispose();
+                return 0;
+            }
+
+            SqlTransaction transaction;
+            try
+            {
+                // Inicie a transação
+                transaction = connection.BeginTransaction();
+            }
+            catch
+            {
+                connection.Close();
+                connection.Dispose();
+                return 0;
+            }
+
+            #region pegando os usuarios
+            sqlQuery = "";
+            sqlQuery += " SELECT COD_USUARIO_PAGADOR, COD_USUARIO_RECEBEDOR, VALOR ";
+            sqlQuery += " FROM TRANSACOES ";
+            sqlQuery += " WHERE COD_TRANSACAO = " + CodTransacao.ToString();
+            command = new SqlCommand(sqlQuery, connection, transaction);
+            reader = command.ExecuteReader();
+            if (!reader.HasRows)
+            {
+                transaction.Rollback();
+                connection.Close();
+                connection.Dispose();
+                return 0;
+            }
+
+            int CodUsuarioPagador = 0;
+            int CodUsuarioRecebedor = 0;
+            double Valor = 0;
+            while (reader.Read())
+            {
+                //aqui o pagador da transação passa no desfazimento a ser o recebedor
+                CodUsuarioRecebedor = Convert.ToInt32(reader["COD_USUARIO_PAGADOR"]);
+                CodUsuarioPagador = Convert.ToInt32(reader["COD_USUARIO_RECEBEDOR"]);
+                Valor = Convert.ToDouble(reader["VALOR"]);
+            }
+            reader.Close();
+            #endregion
+
+            #region Retornando o saldo do Recebedor
+            sqlQuery = "";
+            sqlQuery += " UPDATE USUARIOS SET SALDO = SALDO - " + Valor.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+            sqlQuery += " WHERE COD_USUARIO = " + CodUsuarioPagador.ToString();
+            command = new SqlCommand(sqlQuery, connection, transaction);
+            if (command.ExecuteNonQuery() == 0)
+            {
+                transaction.Rollback();
+                connection.Close();
+                connection.Dispose();
+                return 0;
+            }
+            #endregion
+
+            #region Retornando o saldo do Pagador
+            sqlQuery = "";
+            sqlQuery += " UPDATE USUARIOS SET SALDO = SALDO + " + Valor.ToString("F2", System.Globalization.CultureInfo.InvariantCulture);
+            sqlQuery += " WHERE COD_USUARIO = " + CodUsuarioRecebedor.ToString();
+            command = new SqlCommand(sqlQuery, connection, transaction);
+            if (command.ExecuteNonQuery() == 0)
+            {
+                transaction.Rollback();
+                connection.Close();
+                connection.Dispose();
+                return 0;
+            }
+            #endregion
+
+            #region Inserindo a transacao
+            sqlQuery = "";
+            sqlQuery += " INSERT INTO TRANSACOES ";
+            sqlQuery += " (COD_USUARIO_PAGADOR, COD_USUARIO_RECEBEDOR, VALOR, TIPO, DATA) ";
+            sqlQuery += " VALUES ";
+            sqlQuery += " ( ";
+            sqlQuery += CodUsuarioPagador.ToString() + ", ";
+            sqlQuery += CodUsuarioRecebedor.ToString() + ", ";
+            sqlQuery += Valor.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + ", ";
+            sqlQuery += "'DESFAZIMENTO', ";
+            sqlQuery += "'" + DateTime.Now.ToString("dd/MM/yyyy HH:mm:ss") + "' ";
+            sqlQuery += " ) ";
+            command = new SqlCommand(sqlQuery, connection, transaction);
+            if (command.ExecuteNonQuery() == 0)
+            {
+                transaction.Rollback();
+                connection.Close();
+                connection.Dispose();
+                return 0;
+            }
+
+            command = new SqlCommand("SELECT @@IDENTITY COD_TRANSACAO", connection, transaction);
+            reader = command.ExecuteReader();
+            if (!reader.HasRows)
+            {
+                transaction.Rollback();
+                connection.Close();
+                connection.Dispose();
+                return 0;
+            }
+
+            while (reader.Read())
+                codTransacaoDesfazimento = Convert.ToInt32(reader["COD_TRANSACAO"]);
+            reader.Close();
+            #endregion
+
+            transaction.Commit();
+            connection.Close();
+            connection.Dispose();
+
+            return codTransacaoDesfazimento;
+        }
     }
 }
