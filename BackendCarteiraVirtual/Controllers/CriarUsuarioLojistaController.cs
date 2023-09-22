@@ -13,7 +13,7 @@ namespace BackendCarteiraVirtual.Controllers
             _logger = logger;
         }
 
-        [HttpPost("/Usuario/Lojista", Name = "UsuarioLojista")]
+        [HttpPost("/usuario/lojista", Name = "UsuarioLojista")]
         public RetornoPost Post(UsuarioLojista usuario)
         {
             var retorno = new RetornoPost();
@@ -37,20 +37,26 @@ namespace BackendCarteiraVirtual.Controllers
                )
             {
                 retorno.Sucesso = false;
-                retorno.Mensagem = "Documento ou Email devem ser preenchidos";
+                retorno.Mensagem = "Documento ou Email devm ser preenchido";
                 return retorno;
             }
 
-            if (usuario.Tipo == "L")
+            var acessoBD = new AcessoBancoDeDados();
+            if (acessoBD.UsuarioExiste(usuario.Documento, usuario.Email))
             {
-
+                retorno.Sucesso = false;
+                retorno.Mensagem = "Usuário já existe";
+                return retorno;
             }
 
-            if (usuario.Tipo == "C")
+            if (!acessoBD.InserirUsuario(usuario.Nome, usuario.Documento, usuario.Email, usuario.Tipo))
             {
-
+                retorno.Sucesso = false;
+                retorno.Mensagem = "Erro ao inserir usuário";
+                return retorno;
             }
 
+            retorno.Sucesso = true;
             return retorno;
         }
 
